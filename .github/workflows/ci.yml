@@ -1,15 +1,327 @@
-name: CI
+name: Execution Service - CI/CD (feat/development)
+
 on:
   push:
+    branches: [feat/development]
   pull_request:
+    branches: [feat/development]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DOTNET_VERSION: '10.0.x'
+  BUILD_CONFIGURATION: Release
+  DOTNET_NOLOGO: 'true'
+  DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+  TEST_PROJECT: tests/TechChallenge.Execution.Tests/TechChallenge.Execution.Tests.csproj
+  API_PROJECT: src/TechChallenge.Execution.Api/TechChallenge.Execution.Api.csproj
+
+defaults:
+  run:
+    shell: bash
+
 jobs:
   build:
-    runs-on: ubuntu-latest
+    name: 01 - Restore e build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-dotnet@v4
+      - name: Obter código
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          dotnet-version: 10.0.x
-      - run: dotnet restore
-      - run: dotnet build --no-restore -c Release
-      - run: dotnet test --no-build -c Release
+          persist-credentials: false
+
+      - name: Configurar .NET 10
+        uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Restaurar dependências
+        run: dotnet restore TechChallenge.Execution.slnx
+
+      - name: Compilar solução e tratar avisos como erros
+        run: dotnet build TechChallenge.Execution.slnx -c "$BUILD_CONFIGURATION" --no-restore --warnaserror
+
+  tests:
+    name: 02 - Testes unitários e cobertura
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Obter código
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Configurar .NET 10
+        uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Executar testes e coletar cobertura
+        run: >-
+          dotnet test "$TEST_PROJECT" -c "$BUILD_CONFIGURATION"
+          --logger "trx;LogFileName=unit.trx"
+          --results-directory artifacts/test-results/unit
+          --collect "XPlat Code Coverage"
+          -- DataCollectionRunSettings.DataCollectors.DataCollector.Configuration.Format=cobertura,opencover
+
+      - name: Validar resultados e gerar resumo
+        if: always()
+        shell: pwsh
+        run: |
+          $results = 'artifacts/test-results/unit'
+          [xml]$report = Get-Content -LiteralPath "$results/unit.trx" -Raw
+          $counters = $report.TestRun.ResultSummary.Counters
+          $coverageFile = Get-ChildItem -LiteralPath $results -Filter coverage.cobertura.xml -Recurse |
+            Select-Object -First 1
+          if (-not $coverageFile) { throw 'Relatório de cobertura ausente.' }
+          [xml]$report = Get-Content -LiteralPath $coverageFile.FullName -Raw
+          $coverage = $report.coverage
+          $summary = @(
+            '## Testes unitários'
+            ''
+            '| Total | Executados | Aprovados | Falhas |'
+            '| --- | --- | --- | --- |'
+            "| $($counters.total) | $($counters.executed) | $($counters.passed) | $($counters.failed) |"
+            ''
+            "Linhas cobertas: $($coverage.'lines-covered') de $($coverage.'lines-valid')."
+          )
+          $summary | Out-File -LiteralPath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          if ([int]$counters.total -eq 0 -or $counters.executed -ne $counters.total -or $counters.passed -ne $counters.total) {
+            throw 'A suíte deve executar e aprovar todos os testes.'
+          }
+          if ([int]$coverage.'lines-valid' -eq 0 -or [int]$coverage.'lines-covered' -eq 0) {
+            throw 'A suíte não gerou cobertura válida.'
+          }
+
+      - name: Disponibilizar relatórios TRX e cobertura
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: test-results-unit
+          path: artifacts/test-results/unit/
+          if-no-files-found: warn
+          retention-days: 14
+
+  sonar:
+    name: SonarQube
+    needs: tests
+    if: >-
+      vars.SONAR_PROJECT_KEY != '' &&
+      github.actor != 'dependabot[bot]' &&
+      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Obter código e histórico Git
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Configurar .NET 10
+        uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Baixar relatórios dos testes
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: test-results-*
+          path: artifacts/sonar-test-results
+
+      - name: Instalar SonarScanner for .NET
+        run: dotnet tool install dotnet-sonarscanner --tool-path "$RUNNER_TEMP/sonar-tools" --version 12.1.0 --allow-roll-forward
+
+      - name: Configurar análise
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_PROJECT_KEY: ${{ vars.SONAR_PROJECT_KEY }}
+          SONAR_ORGANIZATION: ${{ vars.SONAR_ORGANIZATION }}
+          SONAR_REGION: ${{ vars.SONAR_REGION }}
+          SONAR_HOST_URL: ${{ vars.SONAR_HOST_URL }}
+        run: |
+          if [[ -z "$SONAR_TOKEN" ]]; then
+            echo '::error::Cadastre SONAR_TOKEN nos secrets do GitHub Actions.'
+            exit 1
+          fi
+          if [[ -n "$SONAR_HOST_URL" ]]; then
+            destination=("/d:sonar.host.url=$SONAR_HOST_URL")
+          elif [[ -n "$SONAR_ORGANIZATION" ]]; then
+            destination=("/o:$SONAR_ORGANIZATION")
+            if [[ -n "$SONAR_REGION" ]]; then
+              destination+=("/d:sonar.region=$SONAR_REGION")
+            fi
+          else
+            echo '::error::Configure SONAR_ORGANIZATION para Cloud ou SONAR_HOST_URL para Server.'
+            exit 1
+          fi
+          if [[ -z "$(find artifacts/sonar-test-results -name coverage.opencover.xml -print -quit)" ]]; then
+            echo '::error::Nenhum relatório de cobertura OpenCover foi encontrado.'
+            exit 1
+          fi
+          "$RUNNER_TEMP/sonar-tools/dotnet-sonarscanner" begin \
+            "/k:$SONAR_PROJECT_KEY" "${destination[@]}" "/d:sonar.token=$SONAR_TOKEN" \
+            '/d:sonar.cs.opencover.reportsPaths=artifacts/sonar-test-results/**/coverage.opencover.xml' \
+            '/d:sonar.cs.vstest.reportsPaths=artifacts/sonar-test-results/**/*.trx' \
+            /d:sonar.scanner.scanAll=false /d:sonar.qualitygate.wait=true
+
+      - name: Compilar para análise
+        run: dotnet build TechChallenge.Execution.slnx -c "$BUILD_CONFIGURATION" --no-incremental
+
+      - name: Publicar análise e aguardar Quality Gate
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        run: '"$RUNNER_TEMP/sonar-tools/dotnet-sonarscanner" end "/d:sonar.token=$SONAR_TOKEN"'
+
+  package:
+    name: 03 - Validar API publicada e preparar entrega
+    needs: [build, tests]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      ASPNETCORE_ENVIRONMENT: Production
+      ASPNETCORE_URLS: http://127.0.0.1:5080
+      MONGODB_CONNECTION_STRING: mongodb://127.0.0.1:27017
+      MONGODB_DATABASE: execution_ci
+      RABBITMQ_ENABLED: 'true'
+      RABBITMQ_HOST: '127.0.0.1'
+      RABBITMQ_USER: execution-ci
+      RABBITMQ_PASSWORD: execution-ci-local
+    services:
+      mongo:
+        image: mongo:7
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd "mongosh --quiet --eval 'db.adminCommand({ ping: 1 }).ok'"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+      rabbitmq:
+        image: rabbitmq:4.2.9-management
+        env:
+          RABBITMQ_DEFAULT_USER: execution-ci
+          RABBITMQ_DEFAULT_PASS: execution-ci-local
+        ports:
+          - 5672:5672
+          - 15672:15672
+        options: >-
+          --health-cmd "rabbitmq-diagnostics -q ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+          --health-start-period 15s
+    steps:
+      - name: Obter código
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Configurar .NET 10
+        uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Publicar aplicação em Release
+        run: >-
+          dotnet publish "$API_PROJECT" -c "$BUILD_CONFIGURATION"
+          --self-contained false -p:UseAppHost=false --output artifacts/publish
+
+      - name: Validar health e integração RabbitMQ, MongoDB e HTTP
+        run: |
+          dotnet artifacts/publish/TechChallenge.Execution.Api.dll > artifacts/smoke.log 2>&1 &
+          app_pid=$!
+          trap 'kill "$app_pid" 2>/dev/null || true' EXIT
+
+          management_url=http://127.0.0.1:15672/api
+          rabbit_auth="$RABBITMQ_USER:$RABBITMQ_PASSWORD"
+          curl --fail --silent --show-error --max-time 5 --retry 20 --retry-delay 2 --retry-connrefused \
+            "$ASPNETCORE_URLS/health" -o artifacts/health.txt
+          grep -qx Healthy artifacts/health.txt
+
+          for attempt in {1..30}; do
+            if curl --fail --silent --max-time 3 --user "$rabbit_auth" \
+              "$management_url/queues/%2F/execution-service.events" -o artifacts/rabbitmq-queue.json &&
+              jq -e '.consumers > 0' artifacts/rabbitmq-queue.json >/dev/null; then
+              break
+            fi
+            sleep 2
+          done
+          jq -e '.consumers > 0' artifacts/rabbitmq-queue.json >/dev/null
+
+          order_id=73f78736-c644-4f1b-a509-aae4ce40ce31
+          event=$(jq -cn --arg order_id "$order_id" --arg occurred_at "$(date -u +%FT%TZ)" '{
+            eventId: "9bf74525-11b0-41cc-8289-5bce73429944",
+            ordemServicoUniqueCode: $order_id,
+            occurredAt: $occurred_at
+          }')
+          message=$(jq -cn --arg payload "$event" '{
+            properties: {content_type: "application/json"},
+            routing_key: "billing.aprovado",
+            payload: $payload,
+            payload_encoding: "string"
+          }')
+          curl --fail --silent --show-error --max-time 5 --user "$rabbit_auth" \
+            --header 'Content-Type: application/json' --data "$message" \
+            "$management_url/exchanges/%2F/techchallenge.events/publish" -o artifacts/rabbitmq-publish.json
+          jq -e '.routed == true' artifacts/rabbitmq-publish.json >/dev/null
+
+          for attempt in {1..30}; do
+            if curl --fail --silent --max-time 3 "$ASPNETCORE_URLS/api/v1/execucoes/os/$order_id" \
+              -o artifacts/execution.json &&
+              jq -e --arg order_id "$order_id" '.ordemServicoUniqueCode == $order_id and .status == "Pendente"' \
+                artifacts/execution.json >/dev/null; then
+              echo 'API respondeu Healthy e retornou a execução gravada no MongoDB após consumir billing.aprovado.' >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo 'A API não encontrou a execução pendente criada pelo evento billing.aprovado.' >&2
+          exit 1
+
+      - name: Exibir logs da aplicação caso a validação falhe
+        if: failure()
+        run: |
+          if [[ -f artifacts/smoke.log ]]; then
+            cat artifacts/smoke.log
+          fi
+
+      - name: Empacotar aplicação e gerar checksum SHA256
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/feat/development'
+        working-directory: artifacts
+        run: |
+          tar -czf execution-service-feat-development.tar.gz -C publish .
+          sha256sum execution-service-feat-development.tar.gz > execution-service-feat-development.tar.gz.sha256
+
+      - name: Disponibilizar pacote de entrega
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/feat/development'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: execution-service-feat-development-${{ github.sha }}
+          path: |
+            artifacts/execution-service-feat-development.tar.gz
+            artifacts/execution-service-feat-development.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Disponibilizar diagnóstico da integração
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: execution-service-smoke
+          path: |
+            artifacts/smoke.log
+            artifacts/health.txt
+            artifacts/rabbitmq-queue.json
+            artifacts/rabbitmq-publish.json
+            artifacts/execution.json
+          if-no-files-found: warn
+          retention-days: 14
