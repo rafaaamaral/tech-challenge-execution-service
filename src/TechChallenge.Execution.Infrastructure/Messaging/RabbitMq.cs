@@ -52,7 +52,7 @@ public class NoOpEventPublisher(ILogger<NoOpEventPublisher> logger) : IEventPubl
     public Task PublicarAsync<TEvent>(TEvent evento, CancellationToken ct) where TEvent : class
     {
         logger.LogWarning("RabbitMQ desabilitado: evento {Evento} não publicado.", typeof(TEvent).Name);
-        return Task.CompletedTask;
+        throw new InvalidOperationException("RabbitMQ desabilitado (RABBITMQ_ENABLED=false): evento não publicado.");
     }
 }
 

@@ -1,3 +1,4 @@
+using System.Text.Json.Serialization;
 using Microsoft.Extensions.Logging;
 using TechChallenge.Execution.Domain;
 
@@ -9,7 +10,11 @@ public record OrcamentoAprovado(Guid EventId, Guid OrdemServicoUniqueCode, DateT
 // Publicados (routing keys execution.finalizada / execution.falhou)
 public record ExecucaoSolicitada(Guid EventId, Guid OrdemServicoUniqueCode, DateTime OccurredAt);
 public record ExecucaoFinalizada(Guid EventId, Guid OrdemServicoUniqueCode, DateTime OccurredAt);
-public record ExecucaoFalhou(Guid EventId, Guid OrdemServicoUniqueCode, string Motivo, DateTime OccurredAt);
+public record ExecucaoFalhou(
+    Guid EventId,
+    Guid OrdemServicoUniqueCode,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Motivo,
+    DateTime OccurredAt);
 
 public interface IEventPublisher
 {

@@ -65,6 +65,27 @@ public class ExecucaoService(IExecucaoRepository repository, IEventPublisher pub
         return response;
     }
 
+    public async Task<ExecucaoResponse?> FalharAsync(Guid ordemServicoUniqueCode, CancellationToken ct)
+    {
+        var execucao = await repository.ObterPorOrdemServicoAsync(ordemServicoUniqueCode, ct);
+        if (execucao is null) return null;
+
+        var jaFalhou = execucao.Status == StatusExecucao.Falhou;
+        execucao.Falhar();
+        if (!jaFalhou) await repository.AtualizarAsync(execucao, ct);
+
+        if (execucao.FalhaPendentePublicacao)
+        {
+            // Mesmo eventId em reenvios: consumidores podem deduplicar. Falha de publicação propaga (HTTP 500)
+            // e a chamada pode ser repetida com segurança.
+            await publisher.PublicarAsync(
+                new ExecucaoFalhou(execucao.FalhaEventoId!.Value, ordemServicoUniqueCode, null, execucao.FalhaOcorridaEm!.Value), ct);
+            execucao.MarcarFalhaPublicada();
+            await repository.AtualizarAsync(execucao, ct);
+        }
+        return ExecucaoResponse.De(execucao);
+    }
+
     private async Task<ExecucaoResponse?> AplicarAsync(Guid ordemServicoUniqueCode, Action<Execucao> acao, CancellationToken ct, bool persistir = false)
     {
         var execucao = await repository.ObterPorOrdemServicoAsync(ordemServicoUniqueCode, ct);

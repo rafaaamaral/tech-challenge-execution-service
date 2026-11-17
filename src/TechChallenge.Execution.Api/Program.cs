@@ -78,6 +78,14 @@ g.MapPatch("/os/{uniqueCode:guid}/reparo", async (Guid uniqueCode, ExecucaoServi
 g.MapPatch("/os/{uniqueCode:guid}/finalizacao", async (Guid uniqueCode, ExecucaoService s, CancellationToken ct) =>
     await s.FinalizarAsync(uniqueCode, ct) is { } r ? Results.Ok(r) : Results.NotFound());
 
+g.MapPatch("/os/{uniqueCode:guid}/falha", async (Guid uniqueCode, ExecucaoService s, CancellationToken ct) =>
+    await s.FalharAsync(uniqueCode, ct) is { } r ? Results.Ok(r) : Results.NotFound())
+    .WithSummary("Registra falha da execução e publica execution.falhou (compensação da Saga).")
+    .Produces<ExecucaoResponse>(StatusCodes.Status200OK)
+    .Produces(StatusCodes.Status404NotFound)
+    .Produces(StatusCodes.Status409Conflict)
+    .Produces(StatusCodes.Status500InternalServerError);
+
 app.Run();
 
 public record RegistrarExecucaoRequest(Guid OrdemServicoUniqueCode);
