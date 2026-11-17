@@ -8,6 +8,17 @@ A esteira inicia a API publicada com MongoDB e RabbitMQ efêmeros, confirma `200
 
 Após as verificações, os pushes na branch geram o artefato `execution-service-feat-development-<SHA>`, disponível por 30 dias. Ele contém a aplicação publicada e o checksum SHA256 do pacote.
 
+## SonarQube
+
+O job **SonarQube** analisa o código C# com o SonarScanner for .NET, importa a cobertura OpenCover dos testes da esteira e aguarda o Quality Gate. Ele roda em pushes para `feat/development` e em pull requests do próprio repositório para essa branch.
+
+1. Crie ou importe o projeto no SonarQube. No Cloud, selecione análise via GitHub Actions e desative a análise automática se ela estiver ativa.
+2. Em **Settings → Secrets and variables → Actions** no GitHub, cadastre o secret `SONAR_TOKEN` com permissão **Execute Analysis** para o projeto.
+3. Em **Variables**, cadastre `SONAR_ORGANIZATION` para SonarQube Cloud, ou `SONAR_HOST_URL` para um SonarQube Server acessível pelo runner. Para uma organização Cloud na região dos EUA, defina também `SONAR_REGION=us`.
+4. Cadastre a variável `SONAR_PROJECT_KEY` por último para ativar o job. Consulte o resultado do Quality Gate e o link da análise no log do job.
+
+Para analisar branches de desenvolvimento e seus pull requests, use um plano Cloud com esse suporte (OSS, Team ou Enterprise) ou SonarQube Server Developer Edition ou superior. Em um projeto Cloud novo, faça a análise inicial da branch principal antes de analisar a branch de desenvolvimento. [Planos e suporte a branches](https://docs.sonarsource.com/sonarqube-cloud/administering-sonarcloud/managing-subscription/subscription-plans) · [Primeira análise no Cloud](https://docs.sonarsource.com/sonarqube-cloud/getting-started/first-analysis)
+
 ## Implantar o pacote
 
 1. Baixe o artefato da execução bem-sucedida no GitHub Actions e extraia o ZIP. Valide o checksum e extraia a aplicação em um diretório de release.
