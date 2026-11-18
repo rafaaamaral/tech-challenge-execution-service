@@ -23,6 +23,7 @@ spec:
       containers:
         - name: api
           image: techchallenge-execution:latest
+          imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8080
           envFrom:
@@ -45,7 +46,8 @@ spec:
   selector:
     app: execution-api
   ports:
-    - port: 80
+    - name: http
+      port: 80
       targetPort: 8080
 ---
 apiVersion: apps/v1
