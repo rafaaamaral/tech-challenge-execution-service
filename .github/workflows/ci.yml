@@ -20,6 +20,7 @@ env:
   DOTNET_NOLOGO: 'true'
   DOTNET_CLI_TELEMETRY_OPTOUT: '1'
   TEST_PROJECT: tests/TechChallenge.Execution.Tests/TechChallenge.Execution.Tests.csproj
+  INTEGRATION_TEST_PROJECT: tests/TechChallenge.Execution.IntegrationTests/TechChallenge.Execution.IntegrationTests.csproj
   API_PROJECT: src/TechChallenge.Execution.Api/TechChallenge.Execution.Api.csproj
 
 defaults:
@@ -49,7 +50,7 @@ jobs:
         run: dotnet build TechChallenge.Execution.slnx -c "$BUILD_CONFIGURATION" --no-restore --warnaserror
 
   tests:
-    name: 02 - Testes unitários e cobertura
+    name: 02 - Testes e cobertura
     needs: build
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -64,7 +65,7 @@ jobs:
         with:
           dotnet-version: ${{ env.DOTNET_VERSION }}
 
-      - name: Executar testes e coletar cobertura
+      - name: Executar testes unitários e coletar cobertura
         run: >-
           dotnet test "$TEST_PROJECT" -c "$BUILD_CONFIGURATION"
           --logger "trx;LogFileName=unit.trx"
@@ -72,41 +73,62 @@ jobs:
           --collect "XPlat Code Coverage"
           -- DataCollectionRunSettings.DataCollectors.DataCollector.Configuration.Format=cobertura,opencover
 
+      - name: Executar testes de integração e coletar cobertura
+        run: >-
+          dotnet test "$INTEGRATION_TEST_PROJECT" -c "$BUILD_CONFIGURATION"
+          --logger "trx;LogFileName=integration.trx"
+          --results-directory artifacts/test-results/integration
+          --collect "XPlat Code Coverage"
+          -- DataCollectionRunSettings.DataCollectors.DataCollector.Configuration.Format=cobertura,opencover
+
       - name: Validar resultados e gerar resumo
         if: always()
         shell: pwsh
         run: |
-          $results = 'artifacts/test-results/unit'
-          [xml]$report = Get-Content -LiteralPath "$results/unit.trx" -Raw
-          $counters = $report.TestRun.ResultSummary.Counters
-          $coverageFile = Get-ChildItem -LiteralPath $results -Filter coverage.cobertura.xml -Recurse |
-            Select-Object -First 1
-          if (-not $coverageFile) { throw 'Relatório de cobertura ausente.' }
-          [xml]$report = Get-Content -LiteralPath $coverageFile.FullName -Raw
-          $coverage = $report.coverage
-          $summary = @(
-            '## Testes unitários'
-            ''
-            '| Total | Executados | Aprovados | Falhas |'
-            '| --- | --- | --- | --- |'
-            "| $($counters.total) | $($counters.executed) | $($counters.passed) | $($counters.failed) |"
-            ''
-            "Linhas cobertas: $($coverage.'lines-covered') de $($coverage.'lines-valid')."
-          )
-          $summary | Out-File -LiteralPath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
-          if ([int]$counters.total -eq 0 -or $counters.executed -ne $counters.total -or $counters.passed -ne $counters.total) {
-            throw 'A suíte deve executar e aprovar todos os testes.'
-          }
-          if ([int]$coverage.'lines-valid' -eq 0 -or [int]$coverage.'lines-covered' -eq 0) {
-            throw 'A suíte não gerou cobertura válida.'
+          $suites = [ordered]@{ unit = 'Testes unitários'; integration = 'Testes de integração' }
+          foreach ($suite in $suites.Keys) {
+            $results = "artifacts/test-results/$suite"
+            [xml]$report = Get-Content -LiteralPath "$results/$suite.trx" -Raw
+            $counters = $report.TestRun.ResultSummary.Counters
+            $coverageFile = Get-ChildItem -LiteralPath $results -Filter coverage.cobertura.xml -Recurse |
+              Select-Object -First 1
+            if (-not $coverageFile) { throw "Relatório de cobertura ausente para $suite." }
+            [xml]$report = Get-Content -LiteralPath $coverageFile.FullName -Raw
+            $coverage = $report.coverage
+            $summary = @(
+              "## $($suites[$suite])"
+              ''
+              '| Total | Executados | Aprovados | Falhas |'
+              '| --- | --- | --- | --- |'
+              "| $($counters.total) | $($counters.executed) | $($counters.passed) | $($counters.failed) |"
+              ''
+              "Linhas cobertas: $($coverage.'lines-covered') de $($coverage.'lines-valid')."
+              ''
+            )
+            $summary | Out-File -LiteralPath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+            if ([int]$counters.total -eq 0 -or $counters.executed -ne $counters.total -or $counters.passed -ne $counters.total) {
+              throw "A suíte $suite deve executar e aprovar todos os testes."
+            }
+            if ([int]$coverage.'lines-valid' -eq 0 -or [int]$coverage.'lines-covered' -eq 0) {
+              throw "A suíte $suite não gerou cobertura válida."
+            }
           }
 
-      - name: Disponibilizar relatórios TRX e cobertura
+      - name: Disponibilizar relatórios dos testes unitários
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: test-results-unit
           path: artifacts/test-results/unit/
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Disponibilizar relatórios dos testes de integração
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: test-results-integration
+          path: artifacts/test-results/integration/
           if-no-files-found: warn
           retention-days: 14
 
@@ -135,7 +157,7 @@ jobs:
       - name: Baixar relatórios dos testes
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: test-results-unit
+          pattern: test-results-*
           path: artifacts/sonar-test-results
 
       - name: Instalar SonarScanner for .NET
@@ -185,6 +207,29 @@ jobs:
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         run: '"$RUNNER_TEMP/sonar-tools/dotnet-sonarscanner" end "/d:sonar.token=$SONAR_TOKEN"'
+
+      - name: Verificar cobertura geral mínima de 80%
+        if: github.ref == 'refs/heads/main'
+        shell: pwsh
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_PROJECT_KEY: ${{ vars.SONAR_PROJECT_KEY }}
+          SONAR_REGION: ${{ vars.SONAR_REGION }}
+          SONAR_HOST_URL: ${{ vars.SONAR_HOST_URL }}
+        run: |
+          $sonarUrl = $env:SONAR_HOST_URL
+          if (-not $sonarUrl) {
+            $sonarUrl = if ($env:SONAR_REGION -eq 'us') { 'https://sonarqube.us' } else { 'https://sonarcloud.io' }
+          }
+          $project = [uri]::EscapeDataString($env:SONAR_PROJECT_KEY)
+          $uri = "$($sonarUrl.TrimEnd('/'))/api/measures/component?component=$project&metricKeys=coverage"
+          $report = Invoke-RestMethod -Uri $uri -Headers @{ Authorization = "Bearer $env:SONAR_TOKEN" } -TimeoutSec 30
+          $measure = $report.component.measures | Where-Object metric -eq 'coverage'
+          if (-not $measure.value) { throw 'O SonarQube não retornou a cobertura geral.' }
+          $coverage = [decimal]::Parse($measure.value, [Globalization.CultureInfo]::InvariantCulture)
+          "Cobertura geral no SonarQube: $coverage% (mínimo de 80%)." |
+            Out-File -LiteralPath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          if ($coverage -lt 80) { throw "Cobertura geral de $coverage%, abaixo dos 80% exigidos." }
 
   kubernetes:
     name: Validar imagem em Kubernetes

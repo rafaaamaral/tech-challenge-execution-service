@@ -2,7 +2,9 @@
 
 ## CI/CD na `main`
 
-A [esteira de CI/CD](.github/workflows/ci.yml) roda em pushes e pull requests para a `main` e pode ser iniciada manualmente em **Actions**. O GitHub Actions compila em Release com avisos tratados como erros e disponibiliza os relatórios TRX, Cobertura XML e OpenCover em **Artifacts → test-results-unit**.
+A [esteira de CI/CD](.github/workflows/ci.yml) roda em pushes e pull requests para a `main` e pode ser iniciada manualmente em **Actions**. O GitHub Actions compila em Release com avisos tratados como erros e disponibiliza os relatórios TRX, Cobertura XML e OpenCover em **Artifacts → test-results-unit** e **test-results-integration**.
+
+Os testes de integração exercitam a API HTTP, a persistência no MongoDB e os eventos de entrada e saída no RabbitMQ. Para rodar as duas suítes localmente, inicie o Docker com containers Linux e execute `dotnet test TechChallenge.Execution.slnx`. Para rodar apenas a suíte unitária, use `dotnet test tests/TechChallenge.Execution.Tests`.
 
 A esteira inicia a API publicada com MongoDB e RabbitMQ efêmeros, confirma `200 Healthy` em `/health` e publica um evento `billing.aprovado`. A consulta HTTP precisa retornar a execução gravada com status `Pendente`.
 
@@ -12,7 +14,7 @@ Execuções na `main` que passam pelas verificações e pelo Quality Gate do Son
 
 ## SonarQube
 
-O job **SonarQube** analisa o código C# com o SonarScanner for .NET, importa a cobertura OpenCover dos testes da esteira e aguarda o Quality Gate. Ele é obrigatório na `main` e também roda em pull requests do próprio repositório quando `SONAR_PROJECT_KEY` está configurada. Pull requests de forks e do Dependabot executam as demais verificações.
+O job **SonarQube** analisa o código C# com o SonarScanner for .NET, importa a cobertura OpenCover das duas suítes e aguarda o Quality Gate. Na `main`, a esteira também exige cobertura geral de pelo menos 80% conforme o SonarQube. O job analisa pull requests do próprio repositório quando `SONAR_PROJECT_KEY` está configurada. Pull requests de forks e do Dependabot executam as demais verificações.
 
 1. Crie ou importe o projeto no SonarQube. No Cloud, selecione análise via GitHub Actions e desative a análise automática se ela estiver ativa.
 2. Em **Settings → Secrets and variables → Actions** no GitHub, cadastre o secret `SONAR_TOKEN` com permissão **Execute Analysis** para o projeto.
